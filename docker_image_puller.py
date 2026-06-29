@@ -727,6 +727,12 @@ def download_file_with_progress(
 
                 resp.raise_for_status()
 
+                # 服务器未支持断点续传（请求了 Range 却返回 200 全文而非 206），
+                # 若继续以 'ab' 追加会把全文拼到半截文件上导致损坏，故从头下载。
+                if resume_pos > 0 and resp.status_code != 206:
+                    logger.warning(f'⚠️ {desc} 服务器不支持断点续传，重新下载完整文件')
+                    resume_pos = 0
+
                 content_range = resp.headers.get('content-range')
                 if content_range:
                     total_size = int(content_range.split('/')[1])
