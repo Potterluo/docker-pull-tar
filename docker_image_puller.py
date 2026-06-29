@@ -378,8 +378,6 @@ class SessionManager:
         clean = urlunparse((parsed.scheme, netloc, '', '', '', ''))
         return clean
 
-        return session
-
 
 def get_output_dir(repository: str, tag: str, arch: str, output_path: Optional[str] = None) -> Path:
     safe_repo = repository.replace("/", "_").replace(":", "_")
@@ -687,7 +685,7 @@ def get_file_size(session: requests.Session, url: str, headers: Dict[str, str]) 
         resp = session.head(url, headers=headers, verify=False, timeout=30)
         if resp.status_code == 200:
             return int(resp.headers.get('content-length', 0))
-    except:
+    except requests.exceptions.RequestException:
         pass
     return 0
 
@@ -701,7 +699,8 @@ def download_file_with_progress(
     expected_digest: Optional[str] = None,
     max_retries: int = 10,
     stats: Optional[DownloadStats] = None,
-    chunk_size: int = 10 * 1024 * 1024
+    chunk_size: int = 10 * 1024 * 1024,
+    workers: int = 4
 ) -> bool:
     CHUNK_THRESHOLD = 50 * 1024 * 1024
     
@@ -744,7 +743,8 @@ def download_file_with_progress(
                 if total_size - resume_pos > CHUNK_THRESHOLD and resume_pos == 0:
                     return download_file_in_chunks(
                         session, url, headers, save_path, desc, 
-                        total_size, expected_digest, max_retries, stats, chunk_size
+                        total_size, expected_digest, max_retries, stats, chunk_size,
+                        workers=workers
                     )
 
                 mode = 'ab' if resume_pos > 0 else 'wb'
@@ -845,7 +845,8 @@ def download_file_in_chunks(
     expected_digest: Optional[str] = None,
     max_retries: int = 10,
     stats: Optional[DownloadStats] = None,
-    chunk_size: int = 10 * 1024 * 1024
+    chunk_size: int = 10 * 1024 * 1024,
+    workers: int = 4
 ) -> bool:
     num_chunks = (total_size + chunk_size - 1) // chunk_size
     temp_dir = save_path + '.chunks'
@@ -927,7 +928,7 @@ def download_file_in_chunks(
             
             return False
         
-        max_workers = min(num_chunks, 4)
+        max_workers = min(num_chunks, workers)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for i, (start, end, chunk_file) in enumerate(chunk_files):
@@ -1008,7 +1009,8 @@ def download_layers(
     tag: str,
     arch: str,
     output_dir: Path,
-    ci_mode: bool = False
+    ci_mode: bool = False,
+    workers: int = 4
 ):
     global progress_display
     progress_display = ProgressDisplay(ci_mode=ci_mode)
@@ -1078,7 +1080,7 @@ def download_layers(
 
     progress_display.print_initial()
 
-    num_workers = min(len(layers_to_download), 4) if layers_to_download else 1
+    num_workers = min(len(layers_to_download), workers) if layers_to_download else 1
 
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = {}
@@ -1098,7 +1100,8 @@ def download_layers(
                     save_path,
                     ublob[:12],
                     expected_digest=ublob,
-                    stats=stats
+                    stats=stats,
+                    workers=workers
                 )] = (ublob, save_path)
 
             for future in as_completed(futures):
@@ -1179,17 +1182,6 @@ def create_image_tar(imgdir: str, repository: str, tag: str, arch: str, output_d
     except Exception as e:
         logger.error(f'打包镜像失败: {e}')
         raise
-
-
-def cleanup_tmp_dir():
-    tmp_dir = 'tmp'
-    try:
-        if os.path.exists(tmp_dir):
-            logger.debug(f'清理临时目录: {tmp_dir}')
-            shutil.rmtree(tmp_dir)
-            logger.debug('临时目录已清理。')
-    except Exception as e:
-        logger.error(f'清理临时目录失败: {e}')
 
 
 def main():
@@ -1464,7 +1456,7 @@ def main():
             session, image_info.registry, image_info.repository,
             resp_json['layers'], auth_head, imgdir, resp_json,
             imgparts, image_info.image_name, image_info.tag, args.arch,
-            output_dir, args.ci
+            output_dir, args.ci, args.workers
         )
 
         output_file = create_image_tar(imgdir, image_info.repository, image_info.tag, args.arch, output_dir)
@@ -1491,7 +1483,6 @@ def main():
         logger.debug(traceback.format_exc())
 
     finally:
-        cleanup_tmp_dir()
         # CI 模式下跳过等待用户输入
         if args and not args.ci:
             try:
