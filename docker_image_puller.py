@@ -35,9 +35,6 @@ def _ensure_utf8_stream(stream):
     return io.TextIOWrapper(buf, encoding='utf-8')
 
 
-sys.stdout = _ensure_utf8_stream(sys.stdout)
-sys.stderr = _ensure_utf8_stream(sys.stderr)
-
 urllib3.disable_warnings()
 
 VERSION = "v1.9.0"
@@ -1191,6 +1188,9 @@ def create_image_tar(imgdir: str, repository: str, tag: str, arch: str, output_d
 
 def main():
     global original_sigint_handler
+    # 统一 UTF-8 输出（仅在 CLI 运行时包装，避免 import 时与 pytest 捕获冲突）
+    sys.stdout = _ensure_utf8_stream(sys.stdout)
+    sys.stderr = _ensure_utf8_stream(sys.stderr)
     # 安装 Ctrl+C 中断处理（仅在 CLI 运行时，避免 import 时副作用）
     original_sigint_handler = signal.signal(signal.SIGINT, signal_handler)
     args = None  # 初始化 args 变量以便在 finally 块中访问
@@ -1497,7 +1497,9 @@ def main():
                 input("\n按回车键退出程序...")
             except (KeyboardInterrupt, EOFError):
                 pass
-        sys.exit(exit_code)
+        # 若已有 SystemExit 在传播（如 argparse --help/--version），不覆盖其退出码
+        if sys.exc_info()[0] is None:
+            sys.exit(exit_code)
 
 
 if __name__ == '__main__':
