@@ -382,7 +382,8 @@ class SessionManager:
 
 def get_output_dir(repository: str, tag: str, arch: str, output_path: Optional[str] = None) -> Path:
     safe_repo = repository.replace("/", "_").replace(":", "_")
-    dir_name = f"{safe_repo}_{tag}_{arch}"
+    safe_arch = arch.replace("/", "_").replace(":", "_")
+    dir_name = f"{safe_repo}_{tag}_{safe_arch}"
 
     if output_path:
         output_dir = Path(output_path) / dir_name
@@ -1111,7 +1112,8 @@ def download_layers(
 
 def create_image_tar(imgdir: str, repository: str, tag: str, arch: str, output_dir: Path) -> str:
     safe_repo = repository.replace("/", "_")
-    docker_tar = str(output_dir / f'{safe_repo}_{tag}_{arch}.tar')
+    safe_arch = arch.replace("/", "_").replace(":", "_")
+    docker_tar = str(output_dir / f'{safe_repo}_{tag}_{safe_arch}.tar')
     try:
         with tarfile.open(docker_tar, "w") as tar:
             tar.add(imgdir, arcname='/')
