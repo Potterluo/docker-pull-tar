@@ -81,6 +81,19 @@ class ImageInfo:
     repository: str
     image_name: str
     tag: str
+    use_http: bool = False
+
+    def registry_url(self, path: str = '') -> str:
+        scheme = 'http' if self.use_http else 'https'
+        return f'{scheme}://{self.registry}{path}'
+
+# 全局协议开关，由 --insecure 参数控制
+_use_http_registry = False
+
+def registry_api(registry: str, path: str) -> str:
+    """构建 registry API URL，根据全局协议开关选择 http 或 https"""
+    scheme = 'http' if _use_http_registry else 'https'
+    return f'{scheme}://{registry}{path}'
 
 
 @dataclass
@@ -146,7 +159,7 @@ class LayerProgress:
 
 
 class ProgressDisplay:
-    def __init__(self, bar_width: int = 30):
+    def __init__(self, bar_width: int = 30, ci_mode: bool = False):
         self.bar_width = bar_width
         self.layers: Dict[str, LayerProgress] = {}
         self.stats: Optional[DownloadStats] = None
@@ -154,6 +167,7 @@ class ProgressDisplay:
         self.update_interval = 0.2
         self.initialized = False
         self.last_line_count = 0
+        self.ci_mode = ci_mode
 
     def add_layer(self, name: str, total_size: int, index: int, total_layers: int):
         with progress_lock:
@@ -180,6 +194,9 @@ class ProgressDisplay:
                 else:
                     layer.downloaded_size = layer.total_size
                 layer.status = 'completed'
+                # CI 模式下打印简单的完成日志
+                if self.ci_mode:
+                    logger.info(f"✅ {name[:12]} 完成 ({layer.format_size(layer.total_size)})")
         self._refresh_display()
 
     def set_chunk_info(self, name: str, current: int, total: int):
@@ -189,6 +206,10 @@ class ProgressDisplay:
                 self.layers[name].total_chunks = total
 
     def _refresh_display(self):
+        # CI 模式下跳过动画更新
+        if self.ci_mode:
+            return
+
         current_time = time.time()
         if current_time - self.last_update < self.update_interval:
             return
@@ -199,7 +220,7 @@ class ProgressDisplay:
             for name, layer in sorted(self.layers.items(), key=lambda x: x[1].index):
                 line = self._format_layer_line(layer)
                 lines.append(line)
-            
+
             if self.stats:
                 speed = self.stats.get_avg_speed()
                 speed_str = self.stats.format_size(int(speed)) if speed > 0 else "0B"
@@ -209,10 +230,10 @@ class ProgressDisplay:
                 for _ in range(self.last_line_count):
                     sys.stdout.write('\033[F')
                 sys.stdout.write('\033[J')
-            
+
             for line in lines:
                 print(line)
-            
+
             self.last_line_count = len(lines)
             self.initialized = True
             sys.stdout.flush()
@@ -251,6 +272,10 @@ class ProgressDisplay:
         return f"  {status_icon} {layer_info} {layer.name:<12} |{bar}| {progress*100:5.1f}% {size_str:>15}{chunk_info}{retry_info}{resume_info}"
 
     def print_initial(self):
+        # CI 模式下跳过初始显示
+        if self.ci_mode:
+            return
+
         with progress_lock:
             for name, layer in sorted(self.layers.items(), key=lambda x: x[1].index):
                 line = self._format_layer_line(layer)
@@ -261,11 +286,18 @@ class ProgressDisplay:
             self.initialized = True
 
 
-progress_display = ProgressDisplay()
+progress_display = ProgressDisplay(ci_mode=False)
 
 
 class SessionManager:
     _instance: Optional[requests.Session] = None
+    _no_proxy: bool = False
+    _custom_proxy: Optional[str] = None
+
+    @classmethod
+    def configure(cls, no_proxy: bool = False, proxy: Optional[str] = None):
+        cls._no_proxy = no_proxy
+        cls._custom_proxy = proxy
 
     @classmethod
     def get_session(cls) -> requests.Session:
@@ -295,12 +327,55 @@ class SessionManager:
         session.mount("https://", adapter)
         session.timeout = (60, 600)
 
-        session.proxies = {
-            'http': os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy'),
-            'https': os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
-        }
-        if session.proxies.get('http') or session.proxies.get('https'):
-            logger.info('🌐 使用代理设置从环境变量')
+        if cls._no_proxy:
+            session.proxies = {'http': None, 'https': None}
+            session.trust_env = False
+            logger.info('🌐 已禁用代理（直连模式）')
+        elif cls._custom_proxy:
+            clean_url = cls._setup_proxy_auth(session, cls._custom_proxy)
+            session.proxies = {'http': clean_url, 'https': clean_url}
+            logger.info(f'🌐 使用自定义代理: {clean_url}')
+        else:
+            proxy_url = (
+                os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy') or
+                os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy') or
+                os.environ.get('ALL_PROXY') or os.environ.get('all_proxy')
+            )
+            if proxy_url:
+                proxy_url = proxy_url.strip()
+                clean_url = cls._setup_proxy_auth(session, proxy_url)
+                session.proxies = {'http': clean_url, 'https': clean_url}
+                logger.info(f'🌐 使用代理设置从环境变量: {clean_url}')
+            else:
+                session.proxies = {'http': None, 'https': None}
+
+        return session
+
+    @staticmethod
+    def _setup_proxy_auth(session: requests.Session, proxy_url: str) -> str:
+        """从代理 URL 中提取认证信息并设置到 session，返回干净的代理 URL。
+
+        解决 requests 在构建 HTTPS CONNECT 隧道时代理认证处理不当的问题。
+        将 http://user:pass@host:port 转为 http://host:port，认证信息通过 headers 发送。
+        """
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(proxy_url)
+        username = parsed.username
+        password = parsed.password
+
+        if username or password:
+            import urllib.parse
+            username = urllib.parse.unquote(username or '')
+            password = urllib.parse.unquote(password or '')
+            encoded_auth = base64.b64encode(f'{username}:{password}'.encode()).decode()
+            # 通过 default headers 设置代理认证，对所有请求生效
+            session.headers.update({'Proxy-Authorization': f'Basic {encoded_auth}'})
+
+        # 重建不含认证信息的 URL
+        netloc = parsed.hostname + (f':{parsed.port}' if parsed.port else '')
+        clean = urlunparse((parsed.scheme, netloc, '', '', '', ''))
+        return clean
 
         return session
 
@@ -411,7 +486,7 @@ def fetch_manifest(
 ) -> Tuple[requests.Response, int]:
     for attempt in range(max_retries):
         try:
-            url = f'https://{registry}/v2/{repository}/manifests/{tag}'
+            url = registry_api(registry, f'/v2/{repository}/manifests/{tag}')
             logger.debug(f'获取镜像清单: {url}')
 
             resp = session.get(url, headers=auth_head, verify=False, timeout=60)
@@ -428,6 +503,43 @@ def fetch_manifest(
             else:
                 logger.error(f'请求清单失败: {e}')
                 raise
+
+
+# 架构别名映射：用户输入 -> 可能匹配的值列表
+ARCH_ALIASES = {
+    'amd64': ['amd64', 'x86_64', 'x64'],
+    'arm64': ['arm64', 'arm64v8', 'aarch64'],
+    'arm32': ['arm32v7', 'arm32v6', 'arm32v5', 'armhf', 'arm'],
+    'i386': ['i386', 'x86', '386'],
+    'ppc64le': ['ppc64le'],
+    'riscv64': ['riscv64'],
+    's390x': ['s390x'],
+}
+
+
+def resolve_arch_aliases(user_arch: str, available_archs: List[str]) -> Optional[str]:
+    """将用户输入的架构名模糊匹配到可用架构列表中的精确值。
+    返回匹配到的精确架构名，未匹配返回 None。
+    """
+    # 精确匹配
+    if user_arch in available_archs:
+        return user_arch
+
+    user_lower = user_arch.lower()
+    for canonical, aliases in ARCH_ALIASES.items():
+        all_names = set(aliases + [canonical])
+        if user_lower in {a.lower() for a in all_names}:
+            # 找到匹配的别名组，在可用列表中找精确值
+            for available in available_archs:
+                if available.lower() in {a.lower() for a in all_names}:
+                    return available
+
+    # 前缀/子串匹配兜底
+    for available in available_archs:
+        if user_lower in available.lower() or available.lower() in user_lower:
+            return available
+
+    return None
 
 
 def select_manifest(manifests: List[Dict], arch: str) -> Optional[str]:
@@ -845,10 +957,11 @@ def download_layers(
     img: str,
     tag: str,
     arch: str,
-    output_dir: Path
+    output_dir: Path,
+    ci_mode: bool = False
 ):
     global progress_display
-    progress_display = ProgressDisplay()
+    progress_display = ProgressDisplay(ci_mode=ci_mode)
 
     os.makedirs(imgdir, exist_ok=True)
 
@@ -860,7 +973,7 @@ def download_layers(
         config_digest = resp_json['config']['digest']
         config_filename = f'{config_digest[7:]}.json'
         config_path = os.path.join(imgdir, config_filename)
-        config_url = f'https://{registry}/v2/{repository}/blobs/{config_digest}'
+        config_url = registry_api(registry, f'/v2/{repository}/blobs/{config_digest}')
 
         if progress_manager.is_config_completed() and os.path.exists(config_path):
             logger.info(f'✅ Config 已存在，跳过下载')
@@ -909,7 +1022,7 @@ def download_layers(
         logger.info(f'📦 跳过 {skipped_count} 个已下载的层，还需下载 {len(layers_to_download)} 个层')
 
     for idx, (ublob, fake_layerid, layerdir, save_path) in enumerate(layers_to_download):
-        url = f'https://{registry}/v2/{repository}/blobs/{ublob}'
+        url = registry_api(registry, f'/v2/{repository}/blobs/{ublob}')
         layer_size = get_file_size(session, url, auth_head)
         progress_display.add_layer(ublob[:12], layer_size, idx + 1, len(layers_to_download))
 
@@ -924,7 +1037,7 @@ def download_layers(
                 if stop_event.is_set():
                     raise KeyboardInterrupt
 
-                url = f'https://{registry}/v2/{repository}/blobs/{ublob}'
+                url = registry_api(registry, f'/v2/{repository}/blobs/{ublob}')
                 progress_manager.update_layer_status(ublob, 'downloading')
 
                 futures[executor.submit(
@@ -1029,6 +1142,7 @@ def cleanup_tmp_dir():
 
 
 def main():
+    args = None  # 初始化 args 变量以便在 finally 块中访问
     try:
         parser = argparse.ArgumentParser(
             description="Docker 镜像拉取工具 - 无需Docker环境直接下载镜像",
@@ -1051,6 +1165,11 @@ def main():
         parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {VERSION}", help="显示版本信息")
         parser.add_argument("--debug", action="store_true", help="启用调试模式，打印请求 URL 和连接状态")
         parser.add_argument("--workers", type=int, default=4, help="并发下载线程数，默认4")
+        parser.add_argument("--ci", action="store_true", help="CI 模式，跳过所有交互输入和进度条动画")
+        parser.add_argument("--list-arch", action="store_true", help="仅列出可用架构，不进行下载")
+        parser.add_argument("--no-proxy", action="store_true", help="禁用代理，使用直连")
+        parser.add_argument("--proxy", help="自定义代理地址（例如：http://127.0.0.1:7890）")
+        parser.add_argument("--insecure", action="store_true", help="使用 HTTP 协议连接 registry（绕过 HTTPS 隧道问题）")
 
         logger.info(f'🚀 Docker 镜像拉取工具 {VERSION}')
 
@@ -1059,13 +1178,24 @@ def main():
         if args.debug:
             logger.setLevel(logging.DEBUG)
 
+        SessionManager.configure(no_proxy=args.no_proxy, proxy=args.proxy if hasattr(args, 'proxy') else None)
+
+        if args.insecure:
+            global _use_http_registry
+            _use_http_registry = True
+            logger.info('⚠️ 已启用 HTTP 模式（不加密连接）')
+
         if not args.image:
+            # CI 模式下要求必须通过参数指定镜像
+            if args.ci:
+                logger.error("错误：CI 模式下必须通过 -i 参数指定镜像名称。")
+                return
             args.image = input("请输入 Docker 镜像名称（例如：nginx:latest 或 harbor.abc.com/abc/nginx:1.26.0）：").strip()
             if not args.image:
                 logger.error("错误：镜像名称是必填项。")
                 return
 
-        if not args.custom_registry and not args.quiet:
+        if not args.custom_registry and not args.quiet and not args.ci:
             print("\n📋 可用的镜像站：")
             for key, site in MIRROR_SITES.items():
                 print(f"  {key}. {site['name']} ({site['registry']})")
@@ -1082,25 +1212,39 @@ def main():
                 args.custom_registry = None
 
         image_info = parse_image_input(args.image, args.custom_registry)
+        image_info.use_http = args.insecure
 
-        if not args.username and not args.quiet:
+        if not args.username and not args.quiet and not args.ci:
             args.username = input("请输入镜像仓库用户名：").strip() or None
-        if not args.password and not args.quiet:
+        if not args.password and not args.quiet and not args.ci:
             args.password = input("请输入镜像仓库密码：").strip() or None
 
         session = SessionManager.get_session()
         auth_head = None
 
         try:
-            url = f'https://{image_info.registry}/v2/'
+            url = image_info.registry_url('/v2/')
             logger.debug(f"获取认证信息: {url}")
             resp = session.get(url, verify=False, timeout=60)
-            auth_url = resp.headers['WWW-Authenticate'].split('"')[1]
-            reg_service = resp.headers['WWW-Authenticate'].split('"')[3]
-            auth_head = get_auth_head(
-                session, auth_url, reg_service, image_info.repository,
-                args.username, args.password
-            )
+
+            www_auth = resp.headers.get('WWW-Authenticate')
+            if www_auth:
+                auth_url = www_auth.split('"')[1]
+                reg_service = www_auth.split('"')[3]
+                auth_head = get_auth_head(
+                    session, auth_url, reg_service, image_info.repository,
+                    args.username, args.password
+                )
+            else:
+                logger.info('📋 Registry 无需认证')
+                auth_head = {
+                    'Accept': ', '.join([
+                        'application/vnd.docker.distribution.manifest.v2+json',
+                        'application/vnd.docker.distribution.manifest.list.v2+json',
+                        'application/vnd.oci.image.index.v1+json',
+                        'application/vnd.oci.image.manifest.v1+json',
+                    ])
+                }
 
             resp, http_code = fetch_manifest(
                 session, image_info.registry, image_info.repository,
@@ -1108,14 +1252,32 @@ def main():
             )
 
             if http_code == 401:
-                use_auth = input(f"当前仓库 {image_info.registry}，需要登录？(y/n, 默认: y): ").strip().lower() or 'y'
-                if use_auth == 'y':
-                    args.username = input("请输入用户名: ").strip()
-                    args.password = input("请输入密码: ").strip()
-                auth_head = get_auth_head(
-                    session, auth_url, reg_service, image_info.repository,
-                    args.username, args.password
-                )
+                # 401 时重新获取认证信息
+                www_auth = resp.headers.get('WWW-Authenticate', '')
+                if not www_auth:
+                    logger.error(f'错误：仓库 {image_info.registry} 需要认证但未返回认证信息')
+                    return
+                auth_url = www_auth.split('"')[1]
+                reg_service = www_auth.split('"')[3]
+                # CI 模式下直接尝试使用提供的凭据或报错
+                if args.ci:
+                    if args.username and args.password:
+                        auth_head = get_auth_head(
+                            session, auth_url, reg_service, image_info.repository,
+                            args.username, args.password
+                        )
+                    else:
+                        logger.error(f"错误：仓库 {image_info.registry} 需要认证，请使用 -u 和 -p 参数提供用户名和密码")
+                        return
+                else:
+                    use_auth = input(f"当前仓库 {image_info.registry}，需要登录？(y/n, 默认: y): ").strip().lower() or 'y'
+                    if use_auth == 'y':
+                        args.username = input("请输入用户名: ").strip()
+                        args.password = input("请输入密码: ").strip()
+                    auth_head = get_auth_head(
+                        session, auth_url, reg_service, image_info.repository,
+                        args.username, args.password
+                    )
 
             resp, http_code = fetch_manifest(
                 session, image_info.registry, image_info.repository,
@@ -1138,25 +1300,44 @@ def main():
             if archs:
                 logger.info(f'📋 当前可用架构：{", ".join(archs)}')
 
+            # --list-arch 参数：仅列出可用架构后退出
+            if args.list_arch:
+                logger.info("✅ --list-arch 模式：已列出所有可用架构，退出")
+                return
+
             if len(archs) == 1:
                 args.arch = archs[0]
                 logger.info(f'✅ 自动选择唯一可用架构: {args.arch}')
-            elif not args.quiet:
-                default_arch = args.arch if args.arch in archs else 'amd64'
-                user_arch = input(f"请输入架构（可选: {', '.join(archs)}，默认: {default_arch}）：").strip()
-                args.arch = user_arch if user_arch else default_arch
+            else:
+                # 模糊匹配架构
+                matched = resolve_arch_aliases(args.arch, archs)
+                if matched:
+                    if matched != args.arch:
+                        logger.info(f'📋 架构 {args.arch} 自动匹配为 {matched}')
+                    args.arch = matched
+                elif not args.quiet and not args.ci:
+                    default_arch = args.arch if args.arch in archs else 'amd64'
+                    user_arch = input(f"请输入架构（可选: {', '.join(archs)}，默认: {default_arch}）：").strip()
+                    args.arch = user_arch if user_arch else default_arch
 
             if args.arch not in archs:
-                logger.error(f'在清单中找不到指定的架构 {args.arch}')
-                logger.info(f'可用架构: {", ".join(archs)}')
-                return
+                # 再尝试一次模糊匹配（处理交互输入的情况）
+                matched = resolve_arch_aliases(args.arch, archs)
+                if matched:
+                    if matched != args.arch:
+                        logger.info(f'📋 架构 {args.arch} 自动匹配为 {matched}')
+                    args.arch = matched
+                else:
+                    logger.error(f'在清单中找不到指定的架构 {args.arch}')
+                    logger.info(f'可用架构: {", ".join(archs)}')
+                    return
 
             digest = select_manifest(manifests, args.arch)
             if not digest:
                 logger.error(f'在清单中找不到指定的架构 {args.arch}')
                 return
 
-            url = f'https://{image_info.registry}/v2/{image_info.repository}/manifests/{digest}'
+            url = image_info.registry_url(f'/v2/{image_info.repository}/manifests/{digest}')
             logger.debug(f'获取架构清单: {url}')
 
             manifest_resp = session.get(url, headers=auth_head, verify=False, timeout=60)
@@ -1177,7 +1358,7 @@ def main():
         else:
             config_digest = resp_json.get('config', {}).get('digest')
             if config_digest:
-                config_url = f'https://{image_info.registry}/v2/{image_info.repository}/blobs/{config_digest}'
+                config_url = image_info.registry_url(f'/v2/{image_info.repository}/blobs/{config_digest}')
                 logger.debug(f'获取镜像配置: {config_url}')
                 try:
                     config_resp = session.get(config_url, headers=auth_head, verify=False, timeout=60)
@@ -1189,12 +1370,12 @@ def main():
                     
                     if actual_arch != args.arch:
                         logger.warning(f'⚠️  镜像架构为 {actual_arch}，与请求的 {args.arch} 不匹配')
-                        if not args.quiet:
+                        if not args.quiet and not args.ci:
                             use_actual = input(f'是否使用镜像实际架构 {actual_arch}？(y/n, 默认: y): ').strip().lower() or 'y'
                             if use_actual == 'y':
                                 args.arch = actual_arch
                     else:
-                        if not args.quiet:
+                        if not args.quiet and not args.ci:
                             confirm = input(f'确认下载 {actual_os}/{actual_arch} 架构的镜像？(y/n, 默认: y): ').strip().lower() or 'y'
                             if confirm != 'y':
                                 logger.info('用户取消下载')
@@ -1227,7 +1408,7 @@ def main():
             session, image_info.registry, image_info.repository,
             resp_json['layers'], auth_head, imgdir, resp_json,
             imgparts, image_info.image_name, image_info.tag, args.arch,
-            output_dir
+            output_dir, args.ci
         )
 
         output_file = create_image_tar(imgdir, image_info.repository, image_info.tag, args.arch, output_dir)
@@ -1253,10 +1434,12 @@ def main():
 
     finally:
         cleanup_tmp_dir()
-        try:
-            input("\n按回车键退出程序...")
-        except (KeyboardInterrupt, EOFError):
-            pass
+        # CI 模式下跳过等待用户输入
+        if args and not args.ci:
+            try:
+                input("\n按回车键退出程序...")
+            except (KeyboardInterrupt, EOFError):
+                pass
         sys.exit(0)
 
 

@@ -159,6 +159,8 @@ DockerPull.exe [选项]
 | `-q, --quiet` | 静默模式，减少交互 |
 | `--debug` | 启用调试模式，打印详细日志 |
 | `--workers` | 并发下载线程数，默认4 |
+| `--ci` | **CI 模式，跳过所有交互输入和进度条动画，适合自动化脚本使用** |
+| `--list-arch` | **仅列出可用架构，不进行下载** |
 | `-v, --version` | 显示版本信息 |
 | `-h, --help` | 显示帮助信息 |
 
@@ -206,6 +208,12 @@ DockerPull.exe -i nginx:latest -q
 
 # 下载 Quay.io 多架构镜像
 DockerPull.exe -i quay.io/ascend/vllm-ascend:v0.11.0-a3-openeuler -a arm64
+
+# CI 模式下载（跳过所有交互和进度条动画）
+DockerPull.exe -i nginx:latest --ci -o ./output
+
+# 仅列出可用架构
+DockerPull.exe -i nginx:latest --list-arch
 ```
 
 ## 输出目录说明
@@ -247,6 +255,58 @@ DockerPull.exe -i nginx:latest -o ./downloads
    ```bash
    docker run -it alpine
    ```
+
+## CI/CD 友好功能
+
+### CI 模式 (`--ci`)
+
+在 CI/CD 环境中使用 `--ci` 参数可以：
+
+- 跳过所有交互式输入
+- 禁用进度条动画
+- 不在最后等待用户按键
+- 适合自动化脚本和 CI/CD 流水线
+
+```bash
+# CI 模式示例
+DockerPull.exe -i nginx:latest --ci -o ./output
+DockerPull.exe -i alpine:latest -a arm64 --ci
+```
+
+**注意**：CI 模式下必须通过参数指定所有必要的选项（如 `-i`、`-u`、`-p` 等），不会提示输入。
+
+### 列出可用架构 (`--list-arch`)
+
+使用 `--list-arch` 参数可以快速查看镜像支持的架构，而不进行实际下载：
+
+```bash
+# 列出镜像可用架构
+DockerPull.exe -i nginx:latest --list-arch
+
+# 输出示例：
+# 📋 当前可用架构：amd64, arm64, armv7, ppc64le, s390x
+# ✅ --list-arch 模式：已列出所有可用架构，退出
+```
+
+### GitHub Actions 示例
+
+```yaml
+name: Pull Docker Image
+on: [push]
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Pull Docker Image
+        run: |
+          python docker_image_puller.py -i nginx:latest --ci -o ./output
+      - name: Upload artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: docker-image
+          path: output/*.tar
+```
 
 ## 高可用性特性
 
