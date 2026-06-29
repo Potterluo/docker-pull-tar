@@ -1143,6 +1143,7 @@ def cleanup_tmp_dir():
 
 def main():
     args = None  # 初始化 args 变量以便在 finally 块中访问
+    exit_code = 1  # 默认失败退出码；仅成功/正常退出路径显式置 0
     try:
         parser = argparse.ArgumentParser(
             description="Docker 镜像拉取工具 - 无需Docker环境直接下载镜像",
@@ -1303,6 +1304,7 @@ def main():
             # --list-arch 参数：仅列出可用架构后退出
             if args.list_arch:
                 logger.info("✅ --list-arch 模式：已列出所有可用架构，退出")
+                exit_code = 0
                 return
 
             if len(archs) == 1:
@@ -1372,6 +1374,7 @@ def main():
                     if args.list_arch:
                         logger.info(f'📋 当前可用架构：{actual_arch}')
                         logger.info("✅ --list-arch 模式：已列出所有可用架构，退出")
+                        exit_code = 0
                         return
 
                     if actual_arch != args.arch:
@@ -1385,6 +1388,7 @@ def main():
                             confirm = input(f'确认下载 {actual_os}/{actual_arch} 架构的镜像？(y/n, 默认: y): ').strip().lower() or 'y'
                             if confirm != 'y':
                                 logger.info('用户取消下载')
+                                exit_code = 0
                                 return
                 except Exception as e:
                     logger.warning(f'获取镜像配置失败: {e}')
@@ -1423,6 +1427,8 @@ def main():
         if image_info.registry not in ("registry-1.docker.io", "docker.io"):
             logger.info(f'💡 标签命令: docker tag {image_info.repository}:{image_info.tag} {image_info.registry}/{image_info.repository}:{image_info.tag}')
 
+        exit_code = 0
+
     except KeyboardInterrupt:
         logger.info('⚠️ 用户取消操作。')
     except requests.exceptions.RequestException as e:
@@ -1446,7 +1452,7 @@ def main():
                 input("\n按回车键退出程序...")
             except (KeyboardInterrupt, EOFError):
                 pass
-        sys.exit(0)
+        sys.exit(exit_code)
 
 
 if __name__ == '__main__':
