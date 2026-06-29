@@ -27,8 +27,16 @@ from pathlib import Path
 import io
 import signal
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+def _ensure_utf8_stream(stream):
+    """将标准流包装为 UTF-8；无 buffer（如 pytest 捕获）时原样返回，避免 import 报错。"""
+    buf = getattr(stream, 'buffer', None)
+    if buf is None:
+        return stream
+    return io.TextIOWrapper(buf, encoding='utf-8')
+
+
+sys.stdout = _ensure_utf8_stream(sys.stdout)
+sys.stderr = _ensure_utf8_stream(sys.stderr)
 
 urllib3.disable_warnings()
 
@@ -71,9 +79,6 @@ def signal_handler(signum, frame):
     stop_event.set()
     print('\n⚠️ 收到中断信号，正在保存进度并退出...')
     print('💡 再次按 Ctrl+C 强制退出')
-
-
-original_sigint_handler = signal.signal(signal.SIGINT, signal_handler)
 
 
 @dataclass
@@ -1185,6 +1190,9 @@ def create_image_tar(imgdir: str, repository: str, tag: str, arch: str, output_d
 
 
 def main():
+    global original_sigint_handler
+    # 安装 Ctrl+C 中断处理（仅在 CLI 运行时，避免 import 时副作用）
+    original_sigint_handler = signal.signal(signal.SIGINT, signal_handler)
     args = None  # 初始化 args 变量以便在 finally 块中访问
     exit_code = 1  # 默认失败退出码；仅成功/正常退出路径显式置 0
     try:
