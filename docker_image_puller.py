@@ -1367,7 +1367,13 @@ def main():
                     actual_arch = config_json.get('architecture', 'unknown')
                     actual_os = config_json.get('os', 'unknown')
                     logger.info(f'📋 镜像实际架构: {actual_os}/{actual_arch}')
-                    
+
+                    # --list-arch 模式：单架构镜像列出架构后退出，不进行下载
+                    if args.list_arch:
+                        logger.info(f'📋 当前可用架构：{actual_arch}')
+                        logger.info("✅ --list-arch 模式：已列出所有可用架构，退出")
+                        return
+
                     if actual_arch != args.arch:
                         logger.warning(f'⚠️  镜像架构为 {actual_arch}，与请求的 {args.arch} 不匹配')
                         if not args.quiet and not args.ci:
