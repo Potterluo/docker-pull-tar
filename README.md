@@ -138,6 +138,26 @@ python docker_image_puller_1ms.py -i nginx -t latest -a arm64
 git clone https://github.com/topcss/docker-pull-tar.git
 ```
 
+## 开发与测试
+
+本项目包含单元测试与端到端测试（基于 pytest）。
+
+```bash
+# 安装开发依赖
+pip install -r requirements-dev.txt
+
+# 运行全部测试
+python -m pytest
+
+# 仅单元测试（无网络）
+python -m pytest tests/test_core.py tests/test_unit_download.py
+
+# 端到端测试：启动本地 mock registry，以子进程跑真实 CLI 完成拉取→打包→tar 校验
+python -m pytest tests/test_e2e.py
+```
+
+测试覆盖：镜像名解析、架构模糊匹配、`WWW-Authenticate` 解析与 Basic 认证、断点续传/分片下载/digest 校验、输出路径转义、进度管理，以及单架构/多架构/`--list-arch`/Basic 认证的完整端到端流程。
+
 ## 使用方法
 
 ### 基本用法
