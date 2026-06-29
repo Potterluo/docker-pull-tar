@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import gzip
 import json
@@ -395,7 +396,9 @@ def get_output_dir(repository: str, tag: str, arch: str, output_path: Optional[s
 
 
 def parse_image_input(image_input: str, custom_registry: Optional[str] = None) -> ImageInfo:
-    if '/' in image_input and ('.' in image_input.split('/')[0] or ':' in image_input.split('/')[0]):
+    first_part = image_input.split('/', 1)[0]
+    # Docker 规则：首段含 . 或 :，或为 localhost，则视为仓库地址（registry）
+    if '/' in image_input and ('.' in first_part or ':' in first_part or first_part == 'localhost'):
         registry, remainder = image_input.split('/', 1)
         parts = remainder.split('/')
 
@@ -432,6 +435,47 @@ def parse_image_input(image_input: str, custom_registry: Optional[str] = None) -
         return ImageInfo(registry, repository, img, tag)
 
 
+# Registry 清单/Blob 接受的媒体类型（Docker v2 + OCI）
+ACCEPT_MEDIA_TYPES = ', '.join([
+    'application/vnd.docker.distribution.manifest.v2+json',
+    'application/vnd.docker.distribution.manifest.list.v2+json',
+    'application/vnd.oci.image.index.v1+json',
+    'application/vnd.oci.image.manifest.v1+json',
+])
+
+
+def parse_www_authenticate(header: str) -> Dict[str, str]:
+    """解析 WWW-Authenticate 响应头，兼容 Bearer 与 Basic 两种方案。
+
+    返回 dict，含 scheme（bearer/basic/none/unknown）与可能存在的
+    realm/service/scope 字段（缺失则为空字符串）。原实现用 split('"')[1/3]
+    解析，遇到 Basic 头会 IndexError，且假设 Bearer 字段顺序固定，此处改为
+    按 key 正则提取，更健壮。
+    """
+    result: Dict[str, str] = {'scheme': 'none', 'realm': '', 'service': '', 'scope': ''}
+    if not header:
+        return result
+    lower = header.lower()
+    if lower.startswith('basic'):
+        result['scheme'] = 'basic'
+    elif lower.startswith('bearer'):
+        result['scheme'] = 'bearer'
+    else:
+        result['scheme'] = 'unknown'
+        return result
+    for key in ('realm', 'service', 'scope'):
+        m = re.search(rf'{key}="([^"]*)"', header, re.IGNORECASE)
+        if m:
+            result[key] = m.group(1)
+    return result
+
+
+def basic_auth_header(username: str, password: str) -> Dict[str, str]:
+    """构造 Basic 认证头（含媒体类型 Accept）。"""
+    token = base64.b64encode(f'{username}:{password}'.encode('utf-8')).decode('utf-8')
+    return {'Authorization': f'Basic {token}', 'Accept': ACCEPT_MEDIA_TYPES}
+
+
 def get_auth_head(
     session: requests.Session,
     auth_url: str,
@@ -455,15 +499,14 @@ def get_auth_head(
 
             resp = session.get(url, headers=headers, verify=False, timeout=60)
             resp.raise_for_status()
-            access_token = resp.json()['token']
+            data = resp.json()
+            # 兼容部分仓库（如 GitLab）返回 access_token 而非 token
+            access_token = data.get('token') or data.get('access_token')
+            if not access_token:
+                raise requests.exceptions.RequestException('认证响应中未包含 token 字段')
             auth_head = {
                 'Authorization': f'Bearer {access_token}',
-                'Accept': ', '.join([
-                    'application/vnd.docker.distribution.manifest.v2+json',
-                    'application/vnd.docker.distribution.manifest.list.v2+json',
-                    'application/vnd.oci.image.index.v1+json',
-                    'application/vnd.oci.image.manifest.v1+json',
-                ])
+                'Accept': ACCEPT_MEDIA_TYPES
             }
 
             return auth_head
@@ -1230,24 +1273,21 @@ def main():
             logger.debug(f"获取认证信息: {url}")
             resp = session.get(url, verify=False, timeout=60)
 
-            www_auth = resp.headers.get('WWW-Authenticate')
-            if www_auth:
-                auth_url = www_auth.split('"')[1]
-                reg_service = www_auth.split('"')[3]
+            auth_info = parse_www_authenticate(resp.headers.get('WWW-Authenticate', ''))
+            if auth_info['scheme'] == 'bearer':
                 auth_head = get_auth_head(
-                    session, auth_url, reg_service, image_info.repository,
+                    session, auth_info['realm'], auth_info['service'], image_info.repository,
                     args.username, args.password
                 )
+            elif auth_info['scheme'] == 'basic':
+                if not args.username or not args.password:
+                    logger.error(f"错误：仓库 {image_info.registry} 需要 Basic 认证，请通过 -u/-p 提供用户名和密码")
+                    return
+                auth_head = basic_auth_header(args.username, args.password)
+                logger.info('📋 使用 Basic 认证')
             else:
                 logger.info('📋 Registry 无需认证')
-                auth_head = {
-                    'Accept': ', '.join([
-                        'application/vnd.docker.distribution.manifest.v2+json',
-                        'application/vnd.docker.distribution.manifest.list.v2+json',
-                        'application/vnd.oci.image.index.v1+json',
-                        'application/vnd.oci.image.manifest.v1+json',
-                    ])
-                }
+                auth_head = {'Accept': ACCEPT_MEDIA_TYPES}
 
             resp, http_code = fetch_manifest(
                 session, image_info.registry, image_info.repository,
@@ -1255,21 +1295,15 @@ def main():
             )
 
             if http_code == 401:
-                # 401 时重新获取认证信息
-                www_auth = resp.headers.get('WWW-Authenticate', '')
-                if not www_auth:
+                # 401 时根据 WWW-Authenticate 重新获取认证信息
+                auth_info = parse_www_authenticate(resp.headers.get('WWW-Authenticate', ''))
+                if auth_info['scheme'] == 'none':
                     logger.error(f'错误：仓库 {image_info.registry} 需要认证但未返回认证信息')
                     return
-                auth_url = www_auth.split('"')[1]
-                reg_service = www_auth.split('"')[3]
-                # CI 模式下直接尝试使用提供的凭据或报错
+
+                # CI 模式必须已通过参数提供凭据；非 CI 交互式询问
                 if args.ci:
-                    if args.username and args.password:
-                        auth_head = get_auth_head(
-                            session, auth_url, reg_service, image_info.repository,
-                            args.username, args.password
-                        )
-                    else:
+                    if not args.username or not args.password:
                         logger.error(f"错误：仓库 {image_info.registry} 需要认证，请使用 -u 和 -p 参数提供用户名和密码")
                         return
                 else:
@@ -1277,10 +1311,14 @@ def main():
                     if use_auth == 'y':
                         args.username = input("请输入用户名: ").strip()
                         args.password = input("请输入密码: ").strip()
+
+                if auth_info['scheme'] == 'bearer':
                     auth_head = get_auth_head(
-                        session, auth_url, reg_service, image_info.repository,
+                        session, auth_info['realm'], auth_info['service'], image_info.repository,
                         args.username, args.password
                     )
+                else:  # basic / unknown 兜底按 Basic 处理
+                    auth_head = basic_auth_header(args.username, args.password)
 
             resp, http_code = fetch_manifest(
                 session, image_info.registry, image_info.repository,
