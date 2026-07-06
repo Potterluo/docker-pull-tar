@@ -11,6 +11,7 @@ import pytest
 from conftest import (
     build_image,
     register_manifest_list,
+    register_multi_arch,
     register_single_arch,
 )
 
@@ -137,3 +138,28 @@ def test_e2e_ci_missing_image_fails():
     result = _run_cli(["--ci"], None)
     assert result.returncode == 1
     assert "必须通过 -i" in result.stderr
+
+
+def test_e2e_interactive_arch_selection(mock_registry, tmp_path):
+    """交互模式下多架构镜像应提示选择架构，而非静默下载默认 amd64。"""
+    amd64_img = build_image(repo="myrepo/img", tag="tag", arch="amd64",
+                           file_content="amd64-content")
+    arm64_img = build_image(repo="myrepo/img", tag="tag", arch="arm64",
+                           file_content="arm64-content")
+    register_multi_arch(mock_registry, [("amd64", amd64_img), ("arm64", arm64_img)])
+
+    # 不传 -i / --ci：镜像名与架构均通过 stdin 交互输入
+    result = subprocess.run(
+        [sys.executable, CLI,
+         "-r", mock_registry.host, "-u", "x", "-p", "y",
+         "--insecure", "-o", str(tmp_path)],
+        cwd=str(PROJECT_ROOT),
+        input="myrepo/img:tag\narm64\n",
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, f"stderr:\n{result.stderr}"
+    assert "请输入架构" in result.stdout
+
+    tar_path = _find_output_tar(tmp_path)
+    # 应下载 arm64（层内容为 arm64-content），而非默认 amd64
+    _assert_tar_valid(tar_path, arm64_img)

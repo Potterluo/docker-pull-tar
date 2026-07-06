@@ -1356,17 +1356,22 @@ def main():
             if len(archs) == 1:
                 args.arch = archs[0]
                 logger.info(f'✅ 自动选择唯一可用架构: {args.arch}')
+            elif not args.quiet and not args.ci:
+                # 多架构 + 交互模式：让用户选择架构，默认为请求值/匹配值，
+                # 不再因默认 amd64 命中而静默下载（否则无法选 arm64 等）
+                default_arch = resolve_arch_aliases(args.arch, archs) or (
+                    args.arch if args.arch in archs else archs[0])
+                user_arch = input(
+                    f"请输入架构（可选: {', '.join(archs)}，默认: {default_arch}）："
+                ).strip()
+                args.arch = user_arch if user_arch else default_arch
             else:
-                # 模糊匹配架构
+                # quiet/ci：模糊匹配，无匹配则保留原值（后续校验）
                 matched = resolve_arch_aliases(args.arch, archs)
                 if matched:
                     if matched != args.arch:
                         logger.info(f'📋 架构 {args.arch} 自动匹配为 {matched}')
                     args.arch = matched
-                elif not args.quiet and not args.ci:
-                    default_arch = args.arch if args.arch in archs else 'amd64'
-                    user_arch = input(f"请输入架构（可选: {', '.join(archs)}，默认: {default_arch}）：").strip()
-                    args.arch = user_arch if user_arch else default_arch
 
             if args.arch not in archs:
                 # 再尝试一次模糊匹配（处理交互输入的情况）

@@ -220,6 +220,30 @@ def register_manifest_list(reg: MockRegistry, img: dict):
     return sub_digest
 
 
+def register_multi_arch(reg: MockRegistry, images):
+    """注册一个含多个架构的 manifest list。images: [(arch, img_dict), ...]。"""
+    entries = []
+    for arch, img in images:
+        sub_digest = "sha256:" + hashlib.sha256(img["manifest_bytes"]).hexdigest()
+        reg.add_manifest(img["repo"], sub_digest, img["manifest_bytes"])
+        reg.add_blob(img["config_digest"], img["config_bytes"])
+        reg.add_blob(img["layer_digest"], img["layer_gz"])
+        entries.append({
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "digest": sub_digest,
+            "size": len(img["manifest_bytes"]),
+            "platform": {"architecture": arch, "os": "linux"},
+        })
+    repo = images[0][1]["repo"]
+    tag = images[0][1]["tag"]
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": entries,
+    }
+    reg.add_manifest(repo, tag, json.dumps(index).encode())
+
+
 @pytest.fixture(autouse=True)
 def _reset_globals():
     """每个测试前后重置模块级全局状态，避免相互污染。"""
