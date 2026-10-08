@@ -67,7 +67,11 @@ jobs:
       - name: Test (desktop tag)
         run: go test -tags desktop -count=1 ./cmd/desktop/
       - name: Build the desktop binary
-        run: go build -tags desktop,production -H windowsgui -o bin/dockerpull-desktop.exe ./cmd/desktop
+        # -H windowsgui is a LINKER flag, so it must go through -ldflags. Passed
+        # straight to `go build` it is rejected ("flag provided but not defined:
+        # -H") — which is how this step failed while vet and test passed: only
+        # the build, the part that actually produces the artifact, died.
+        run: go build -tags desktop,production -ldflags "-H windowsgui" -o bin/dockerpull-desktop.exe ./cmd/desktop
       # The GUI/console distinction is invisible in Go source: it is purely a
       # linker flag. A desktop binary built without it opens a command-line
       # window on every launch, so assert the produced artifact.
