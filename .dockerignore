@@ -1,0 +1,23 @@
+# VCS
+.git
+.github
+
+# Build outputs
+bin
+dist
+data
+web/node_modules
+web/out
+web/.next
+internal/server/dist/*
+!internal/server/dist/.gitkeep
+build/bin
+
+# Docs & local tooling
+*.md
+scripts
+
+# Environment — never bake real secrets into the build context
+.env
+.env.local
+.env.*.local

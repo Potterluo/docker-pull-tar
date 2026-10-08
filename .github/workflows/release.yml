@@ -1,0 +1,122 @@
+# Release: on a v* tag, build cross-platform binaries (UI embedded) and attach
+# them to a GitHub Release.
+#
+# Two jobs, because the desktop shell cannot be built everywhere: the CLI target
+# is pure Go (CGO off) and cross-compiles from Linux, while cmd/desktop is a Wails
+# app that needs a Windows host (and the -H windowsgui linker flag, without which
+# the artifact opens a console window).
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  cli:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64, ext: ""    }
+          - { goos: linux,   goarch: arm64, ext: ""    }
+          - { goos: darwin,  goarch: amd64, ext: ""    }
+          - { goos: darwin,  goarch: arm64, ext: ""    }
+          - { goos: windows, goarch: amd64, ext: .exe  }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Build embedded frontend
+        run: |
+          cd web && pnpm install --frozen-lockfile && pnpm build
+          cd ..
+          rm -rf internal/server/dist && cp -r web/out internal/server/dist
+      - name: Build binary
+        env:
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          NAME=dockerpull_${{ matrix.goos }}_${{ matrix.goarch }}
+          # The binary name is dockerpull (dockerpull.exe on Windows). The old
+          # recipe here packaged "$NAME/app$ext", a file nothing ever built, so
+          # the zip/tar step failed and NO release was produced.
+          BIN=dockerpull${{ matrix.ext }}
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} \
+            -X github.com/Potterluo/docker-pull-tar/internal/buildinfo.Version=${VERSION} \
+            -X github.com/Potterluo/docker-pull-tar/internal/buildinfo.Commit=${COMMIT}"
+          mkdir -p "dist/${NAME}"
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags "${LDFLAGS}" -o "dist/${NAME}/${BIN}" ./cmd/server
+          cd dist
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -q "${NAME}.zip" "${NAME}/${BIN}"
+          else
+            tar -czf "${NAME}.tar.gz" -C "${NAME}" "${BIN}"
+          fi
+          ls -l
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+          generate_release_notes: true
+
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Build embedded frontend
+        shell: pwsh
+        run: |
+          cd web; pnpm install --frozen-lockfile; pnpm build
+          cd ..
+          Remove-Item -Recurse -Force internal/server/dist -ErrorAction SilentlyContinue
+          Copy-Item -Recurse web/out internal/server/dist
+      - name: Build desktop shell (GUI subsystem, no console window)
+        shell: pwsh
+        env:
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          $ld = "-s -w -X main.version=$env:VERSION -X main.commit=$env:COMMIT " +
+                "-X github.com/Potterluo/docker-pull-tar/internal/buildinfo.Version=$env:VERSION " +
+                "-X github.com/Potterluo/docker-pull-tar/internal/buildinfo.Commit=$env:COMMIT"
+          # -H windowsgui is a LINKER FLAG: a plain go build produces a console
+          # binary that opens a command-line window on every launch.
+          go build -tags desktop,production -ldflags "$ld -H windowsgui" -o dockerpull-desktop.exe ./cmd/desktop
+          if ($LASTEXITCODE -ne 0) { throw "desktop build failed" }
+          # Assert the artifact really has no console, so a wrong build line
+          # cannot ship silently.
+          $b = [IO.File]::ReadAllBytes("dockerpull-desktop.exe")
+          $o = [BitConverter]::ToInt32($b, 0x3C)
+          $sub = [BitConverter]::ToUInt16($b, $o + 0x5C)
+          if ($sub -ne 2) { throw "desktop artifact subsystem=$sub, want 2 (WINDOWS_GUI)" }
+          Compress-Archive -Path dockerpull-desktop.exe -DestinationPath dockerpull_windows_amd64_desktop.zip -Force
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dockerpull_windows_amd64_desktop.zip

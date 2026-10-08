@@ -1,0 +1,16 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "DockerPull",
+  "outputfilename": "dockerpull-desktop",
+  "info": {
+    "productName": "DockerPull",
+    "productVersion": "2.0.0",
+    "comments": "Docker 镜像离线拉取与导出工具（CLI + 图形界面）"
+  },
+  "frontend:dir": "web",
+  "frontend:install": "",
+  "frontend:build": "",
+  "author": {
+    "name": "Potterluo"
+  }
+}

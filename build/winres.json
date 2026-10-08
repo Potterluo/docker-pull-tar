@@ -1,0 +1,26 @@
+{
+  "RT_GROUP_ICON": {
+    "#3": {
+      "0000": [
+        "windows/icon.ico.png",
+        "icon-48.png",
+        "icon-32.png",
+        "icon-16.png"
+      ]
+    }
+  },
+  "RT_MANIFEST": {
+    "#1": {
+      "0409": {
+        "identity": {
+          "name": "github.com/Potterluo/docker-pull-tar",
+          "version": "0.1.0.0"
+        },
+        "description": "DockerPull — Go + Next.js full-stack app (desktop shell)",
+        "minimum-os": "win7",
+        "execution-level": "as invoker",
+        "dpi-awareness": "per monitor v2"
+      }
+    }
+  }
+}

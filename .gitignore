@@ -1,11 +1,51 @@
-test.py
-.*
-!.gitignore
+# Build artifacts
+bin/
 dist/
-build/
-*.spec
-*.zip
+web/out/
+web/.next/
+internal/server/dist/*
+!internal/server/dist/.gitkeep
+
+# Wails build output (icons/appicon stay tracked)
+build/bin/
+
+# Runtime data
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Smoke-test scratch (scripts/smoke.ps1 keeps its throwaway data dir in the
+# repo on purpose: a restricted or sandboxed environment may deny a child
+# process writes under %TEMP%). Its captured output lands next to it, and an
+# ad-hoc verification run leaves similar dot-dirs behind — none of it belongs
+# in a commit.
+.smoke-data/
+.sm.txt
+.sm.e.txt
+.t[0-9]*/
+.g[0-9]*/
+.s[0-9]*/
+.r[0-9]*/
+.hw[0-9]*/
+
+# Local build output / downloaded images
+downloads/
 *.tar
-__pycache__/
-*.pyc
-*.egg-info/
+
+# Legacy Python implementation's own artifacts (archived under legacy/)
+legacy/**/__pycache__/
+legacy/.pytest_cache/
+legacy/downloads/
+
+# Dependencies
+node_modules/
+
+# Environment — never commit real secrets (.env.example is the template)
+.env*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.shots/

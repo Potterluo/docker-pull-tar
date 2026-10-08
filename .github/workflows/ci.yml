@@ -1,0 +1,112 @@
+# CI: lint + test + build on every push/PR. The frontend build runs once
+# and its output is reused by the Go build (actions/cache keyed on the
+# web/ source hash) — no point re-installing pnpm deps per job.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+      # `go build ./...` compiles the embed directory too; without a UI
+      # build the empty dist still compiles (the placeholder page covers it).
+      - name: Build (no embedded UI)
+        run: go build ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm build
+
+  # The Wails shell is Windows-only in practice (WebView2), and its startup
+  # path is the part with NO other coverage: the binary is linked with
+  # -H windowsgui, so it has no console and a data-directory or WebView2
+  # failure is completely silent — the user sees "the app doesn't open" and
+  # nothing else. Vetting, testing and building it here is what keeps the
+  # probed data-directory chain and the visible error reporting honest.
+  #
+  # It needs no frontend and no CGO: the Wails asset server is a one-line
+  # redirect page, and the real UI is the same embedded dist the other jobs
+  # build.
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+      - name: Vet (desktop tag)
+        run: go vet -tags desktop ./cmd/desktop/
+      - name: Test (desktop tag)
+        run: go test -tags desktop -count=1 ./cmd/desktop/
+      - name: Build the desktop binary
+        run: go build -tags desktop,production -H windowsgui -o bin/dockerpull-desktop.exe ./cmd/desktop
+      # The GUI/console distinction is invisible in Go source: it is purely a
+      # linker flag. A desktop binary built without it opens a command-line
+      # window on every launch, so assert the produced artifact.
+      - name: Assert the desktop binary is GUI-subsystem
+        shell: pwsh
+        run: |
+          $b = [IO.File]::ReadAllBytes('bin/dockerpull-desktop.exe')
+          $o = [BitConverter]::ToInt32($b, 0x3C)
+          $s = [BitConverter]::ToUInt16($b, $o + 0x5C)
+          if ($s -ne 2) { throw "PE subsystem $s (3 = console): launching this binary opens a command-line window." }
+          Write-Host "ok: PE subsystem 2 (WINDOWS_GUI)"
+
+  # Full single-binary build with the UI embedded — the artifact a user
+  # actually runs. Kept as a separate job so it fails loudly if the
+  # embed pipeline breaks while both halves still build alone.
+  binary:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Build web + embed + binary
+        run: |
+          cd web && pnpm install --frozen-lockfile && pnpm build
+          cd ..
+          rm -rf internal/server/dist && cp -r web/out internal/server/dist
+          CGO_ENABLED=0 go build -trimpath -o bin/dockerpull ./cmd/server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dockerpull-linux-amd64
+          path: bin/dockerpull
