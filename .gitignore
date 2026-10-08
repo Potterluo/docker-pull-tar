@@ -34,6 +34,10 @@ data/
 .s[0-9]*/
 .r[0-9]*/
 .hw[0-9]*/
+# Screenshot scratch: scripts/screenshots.ps1 runs against a REAL data directory
+# (tasks, artifacts, credentials), so it holds downloaded blobs and tars. Only
+# the PNGs next to it belong in the repo.
+docs/screenshots/.data/
 
 # Local build output / downloaded images
 downloads/

@@ -83,6 +83,12 @@ func (s *Server) handleListSources(w http.ResponseWriter, r *http.Request) {
 type sourceView struct {
 	store.Source
 	PullHost string `json:"pullHost,omitempty"`
+	// SearchID is the BUILT-IN source identity ("dockerhub", "quay", "mcr"), the
+	// same string GET /api/registries reports as `searchId`. The stored row id is
+	// random, so a deep link written from the registry catalog
+	// (/search?source=mcr) could never match it — the page silently fell back to
+	// the default source. Clients can now match either.
+	SearchID string `json:"searchId,omitempty"`
 }
 
 func viewsFor(list []store.Source) []sourceView {
@@ -93,7 +99,9 @@ func viewsFor(list []store.Source) []sourceView {
 			// The stored row id is a random "src_…", so the mapping is by the
 			// source's identity as a built-in (its name, or the id the seeder
 			// derived it from).
-			v.PullHost = registry.PullHostForSearchSource(builtinSearchID(list[i]))
+			id := builtinSearchID(list[i])
+			v.SearchID = id
+			v.PullHost = registry.PullHostForSearchSource(id)
 		}
 		out = append(out, v)
 	}

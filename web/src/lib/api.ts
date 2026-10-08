@@ -155,6 +155,9 @@ export interface Source {
   priority: number;
   isDefault: boolean;
   createdAt: string;
+  /** The built-in identity ("dockerhub" / "quay" / "mcr"), as /api/registries
+   *  reports it. Deep links may name either this or the stored row id. */
+  searchId?: string;
   /**
    * For a SEARCH source: the registry host its results must be pulled from.
    *

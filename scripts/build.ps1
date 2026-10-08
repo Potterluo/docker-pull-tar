@@ -45,6 +45,13 @@ try {
 Write-Host "==> sync dist (replace, not merge)" -ForegroundColor Cyan
 Remove-Item -Recurse -Force internal\server\dist -ErrorAction SilentlyContinue
 Copy-Item -Recurse web\out internal\server\dist
+# Restore the placeholder the replace above deletes. It is TRACKED, and it is
+# what lets a fresh clone — or CI's backend/desktop jobs, which build no
+# frontend — compile at all: `go:embed all:dist` fails with "pattern all:dist:
+# no matching files found" when the directory does not exist. Forgetting it shows
+# up as a deleted file in `git status` and as a red CI on the next push.
+$gitkeep = Join-Path "internal\server\dist" ".gitkeep"
+if (-not (Test-Path $gitkeep)) { New-Item -ItemType File -Force $gitkeep | Out-Null }
 
 $LdFlags = "-s -w -X main.version=$Version -X main.commit=$Commit -X main.date=$Date " +
     "-X github.com/Potterluo/docker-pull-tar/internal/buildinfo.Version=$Version " +

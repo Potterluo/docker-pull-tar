@@ -110,7 +110,9 @@ export default function SearchPage() {
   // registry catalog on /settings links here for the searchable registries.
   // Without this the link would load the page but silently search whichever
   // source happened to be the default.
-  const [wantedSource, setWantedSource] = useState<string | null>(null);
+  // True once the source list has been read AND the ?source= hint applied, so a
+  // deep link cannot be searched against the wrong backend.
+  const [sourceReady, setSourceReady] = useState(false);
   // Direct full-reference entry: not every image is findable by keyword (a
   // private repo, or anything on a registry with no search API such as GHCR).
   const [manual, setManual] = useState("");
@@ -135,7 +137,7 @@ export default function SearchPage() {
     (async () => {
       const params = new URLSearchParams(window.location.search);
       const q = params.get("q") ?? "";
-      setWantedSource(params.get("source"));
+
       if (!q.trim()) return;
       setKeyword(q);
       setAutoQ(q.trim());
@@ -170,24 +172,36 @@ export default function SearchPage() {
       const res = await listSources("search");
       const list = res.ok ? res.sources ?? [] : [];
       setSources(list);
-      const hinted = wantedSource ? list.find((s) => s.enabled && s.id === wantedSource) : undefined;
+      // Read the ?source= hint HERE, not from state set by another effect: with
+      // state, the default source is chosen first and the auto-search fires
+      // against it before the hint lands — the picker then showed the hinted
+      // source while the results came from the default one.
+      const hint = new URLSearchParams(window.location.search).get("source");
+      // The hint may be a stored row id OR the built-in id the registry catalog
+      // links with ("mcr"), so match either.
+      const hinted = hint
+        ? list.find((s) => s.enabled && (s.id === hint || s.searchId === hint))
+        : undefined;
       const def =
         hinted ??
         list.find((s) => s.enabled && s.isDefault) ??
         list.find((s) => s.enabled) ??
         list[0];
       if (def) setSource(def.id);
+      // Only now may a search start: until the source is decided, the search
+      // would be sent to whichever backend happened to be selected first.
+      setSourceReady(true);
     })();
-  }, [wantedSource]);
+  }, []);
 
   useEffect(() => {
-    if (autoQ === null || !source) return;
+    if (autoQ === null || !source || !sourceReady) return;
     (async () => {
       setAutoQ(null);
       setPage(1);
       await runSearch(autoQ, source, 1);
     })();
-  }, [autoQ, source, runSearch]);
+  }, [autoQ, source, sourceReady, runSearch]);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -569,7 +583,11 @@ export default function SearchPage() {
                       >
                         <TableCell className="font-medium">
                           <span className="flex items-center gap-2">
-                            <span className="truncate">{r.image || r.name}</span>
+                            {/* The REPOSITORY path ("library/nginx",
+                                "bitnami/nginx"), not `image` — that is only the
+                                last segment, so every row of an nginx search
+                                read "nginx" and the repos were indistinguishable. */}
+                            <span className="truncate">{r.repository || r.name}</span>
                             {r.official && <Badge variant="secondary">官方</Badge>}
                           </span>
                         </TableCell>

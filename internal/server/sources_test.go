@@ -220,3 +220,63 @@ func TestDefaultPullHostMatchesWhatAPullActuallyUses(t *testing.T) {
 		t.Errorf("the UI would preselect %q but a bare reference resolves to %q", advertised, used)
 	}
 }
+
+// TestSearchSourcesCarryTheirBuiltinID pins the field that makes a deep link work.
+//
+// The stored row id is random, so GET /api/registries' `searchId` ("mcr") could
+// never match it: /settings links to /search?source=<searchId> and the page
+// silently fell back to the DEFAULT source — the picker showed one backend while
+// the results came from another.
+func TestSearchSourcesCarryTheirBuiltinID(t *testing.T) {
+	ts := newTestServer(t)
+	code, env := ts.envelope(http.MethodGet, "/api/sources?kind=search", nil)
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/sources?kind=search = %d", code)
+	}
+	rows, _ := env["sources"].([]any)
+	if len(rows) == 0 {
+		t.Fatal("no search sources")
+	}
+
+	byBuiltin := map[string]map[string]any{}
+	for _, row := range rows {
+		m, _ := row.(map[string]any)
+		id, _ := m["searchId"].(string)
+		if id == "" {
+			t.Errorf("source %v has no searchId, so a catalog deep link cannot name it", m["name"])
+			continue
+		}
+		// The stored id must stay distinct from it — they are two identities.
+		if stored, _ := m["id"].(string); stored == id {
+			t.Errorf("source %v: id and searchId are both %q", m["name"], id)
+		}
+		byBuiltin[id] = m
+	}
+
+	// Every searchable built-in must be reachable by the id the catalog reports.
+	for _, b := range registry.BuiltinSearchSources {
+		m, ok := byBuiltin[b.ID]
+		if !ok {
+			t.Errorf("no source row carries searchId %q", b.ID)
+			continue
+		}
+		if name, _ := m["name"].(string); name != b.Name {
+			t.Errorf("searchId %q is on %q, want %q", b.ID, name, b.Name)
+		}
+	}
+
+	// And the id must be the SAME string /api/registries uses, or the link is
+	// still broken.
+	_, regEnv := ts.envelope(http.MethodGet, "/api/registries", nil)
+	regs, _ := regEnv["registries"].([]any)
+	for _, r := range regs {
+		reg, _ := r.(map[string]any)
+		sid, _ := reg["searchId"].(string)
+		if sid == "" {
+			continue
+		}
+		if _, ok := byBuiltin[sid]; !ok {
+			t.Errorf("registry catalog advertises searchId %q but no source row carries it", sid)
+		}
+	}
+}

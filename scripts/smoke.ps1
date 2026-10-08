@@ -391,6 +391,20 @@ Assert ($credGone.credentials.Count -eq 0) "the credential is gone after delete"
     $bogusReveal = Invoke-ApiStatus POST "/api/artifacts/no-such-id/reveal" @{}
     Assert ($bogusReveal -eq 404) "reveal of an unknown artifact -> 404 (got $bogusReveal)"
 
+    # --- 10a-2. a search source must be nameable the way the catalog links it ---
+    # /settings links to /search?source=<searchId>, and the stored row id is
+    # random — without searchId on the row the page silently searched the
+    # DEFAULT source while the picker showed the linked one.
+    Assert ($oneMs.searchId -eq '1ms') "the 1ms source carries searchId 1ms (got '$($oneMs.searchId)')"
+    Assert ($quaySource.searchId -eq 'quay') "the quay source carries searchId quay (got '$($quaySource.searchId)')"
+    Assert ($oneMs.id -ne $oneMs.searchId) "the stored id stays distinct from the built-in id"
+    $regsSearch = Invoke-Api GET "/api/registries" $null
+    $catalogIDs = @($regsSearch.registries | Where-Object { $_.searchId } | ForEach-Object { $_.searchId })
+    $rowIDs = @($searches.sources | ForEach-Object { $_.searchId })
+    foreach ($id in $catalogIDs) {
+        Assert ($rowIDs -contains $id) "the catalog's searchId '$id' names a real search source row"
+    }
+
     # --- 10b. inspect honours `insecure` exactly like a task does ---
     # Pointed at THIS server (plain HTTP), the two attempts must differ in
     # transport: without the flag it tries HTTPS and fails on the handshake,

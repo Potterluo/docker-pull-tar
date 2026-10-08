@@ -41,6 +41,7 @@ columns, no ownership checks. Do not reintroduce a gate "for safety".
 | Save a private-registry login | `dockerpull login <host> -u <user> -p <pass>` (or the `/credentials` page) |
 | Dev with hot reload | `make dev-frontend` + `make dev` (browser on :8080) |
 | Regenerate desktop icon resources | `make icons` (after re-rasterizing `web/src/app/icon.svg`) |
+| Regenerate README screenshots | `pwsh -File scripts/screenshots.ps1 -BaseURL http://127.0.0.1:8080 [-Theme dark -Suffix -dark]` against a server whose data dir has real tasks/artifacts, or every page screenshots as an empty table |
 | Generate an entity's full CRUD | `go run ./cmd/generator entity <name> --field title:string ...` |
 
 The binary is **`dockerpull`** (`bin/dockerpull`, `bin/dockerpull.exe` on
@@ -424,6 +425,34 @@ touching the same area.
   catalog: ghcr.io `/v2/_catalog` → 401, registry.k8s.io → 404, public.ecr.aws and
   nvcr.io → 401. Those are reachable only by typing a full reference, which is why
   the UI says so instead of offering a search box that cannot work.
+- **A PowerShell `Task` awaiter leaks a `VoidTaskResult` into the pipeline.**
+  `scripts/screenshots.ps1` drives Chrome over CDP with `ClientWebSocket`, and
+  `$task.GetAwaiter().GetResult()` on a NON-generic Task returns a
+  `VoidTaskResult` VALUE that PowerShell emits. A helper ending in that call then
+  returns `[VoidTaskResult, ClientWebSocket]`, and the caller fails with
+  `VoidTaskResult does not contain a method named SendAsync` — an error that
+  points at the wrong line entirely. Every such call needs `$null =` in front.
+  (Chaining `.GetAwaiter().GetResult()` straight onto a multi-line call is also
+  worth avoiding for the same class of confusion.)
+- **Screenshots must wait for the DATA, not for the load event.** `chrome
+  --screenshot` fires as soon as the document loads, and this UI fetches
+  everything afterwards — so a plain capture documents skeleton placeholders.
+  `scripts/screenshots.ps1` drives CDP instead: it polls a DOM condition, can
+  click (the tag/arch panel only exists after selecting a result), can scroll
+  (steps 2 and 3 sit below a 20-row results table), and seeds the theme in
+  localStorage via `Page.addScriptToEvaluateOnNewDocument` so it is applied
+  pre-paint. `Page.captureScreenshot` returns the bytes, which also side-steps
+  the "Chrome exits before its bytes land" trap entirely. Its demo data dir
+  (`docs/screenshots/.data/`) is gitignored and must stay that way: it contains
+  real downloaded blobs.
+- **A deep link is only as good as the id it carries, and it must be resolved
+  before anything else runs.** `/settings` links to `/search?source=<searchId>`
+  (the BUILT-IN id, "mcr"), while the page matched stored ROW ids (random hex), so
+  the link silently searched the default source with the picker showing the
+  linked one. `GET /api/sources` now reports `searchId` alongside the row id and
+  the page matches either — and it reads the hint while loading the source list,
+  because choosing a default first let the auto-search fire against it before the
+  hint landed. Reported as "picker says 1ms, error says hub.docker.com".
 - **Opening a local folder has to be a server action, so it needs the path
   guard.** A browser cannot open a directory and a `file://` link is blocked, so
   `POST /api/artifacts/{id}/reveal` spawns the file manager. That makes the server

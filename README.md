@@ -32,13 +32,45 @@ DockerPull 解决的是一个具体的痛点：**目标机器不能访问公网 
 
 ---
 
+## 界面
+
+Web GUI 与 CLI 共用同一套服务端路由，所以两边看到的状态、错误、进度口径完全一致。
+界面是中文的，支持浅色/深色主题（右上角切换）。
+
+**搜索 → 选择下载源 → 选择版本与架构 → 下载**，每一步都在同一页完成：
+
+![搜索与下载流程](docs/screenshots/download.png)
+
+<details>
+<summary>深色主题</summary>
+
+![深色主题](docs/screenshots/download-dark.png)
+
+</details>
+
+### 五个页面
+
+| 页面 | 截图 |
+|---|---|
+| **镜像搜索** — 四个可搜索源，结果带 Star / 拉取量 / 更新时间 / 官方标记；上方是「直接指定镜像」，没有搜索接口的仓库（ghcr.io、registry.k8s.io、ECR、NGC…）从这里填全称 | ![镜像搜索](docs/screenshots/search.png) |
+| **下载任务** — 状态、每层进度、大小、实时速度与 ETA；支持暂停 / 继续 / 取消 / 重试（三者语义不同），服务端 SSE 推送 | ![下载任务](docs/screenshots/tasks.png) |
+| **本地镜像包** — 已生成的 `.tar` 列表，可下载、**打开所在文件夹**、删除；页面上直接给出 `docker load -i` 命令 | ![本地镜像包](docs/screenshots/artifacts.png) |
+| **凭证管理** — 私有仓库登录信息，加密存储（Windows DPAPI / 其他平台 AES-256-GCM），密钥只写不可读 | ![凭证管理](docs/screenshots/credentials.png) |
+| **设置** — 镜像源与搜索源的增删改/启停/排序、公共镜像站目录、代理、并发、TLS、输出目录 | ![设置](docs/screenshots/settings.png) |
+
+> 截图由 `scripts/screenshots.ps1` 通过 Chrome DevTools Protocol 自动生成
+> （等数据真正渲染完再拍，而不是页面 load 就拍），可以随时重新生成。
+
+---
+
 ## 特性
 
 五个功能域，CLI 与 GUI 共用同一条代码路径。
 
 ### F1 镜像搜索
 
-- 关键词搜索，多搜索源可切换（内置 Docker Hub 官方、1ms 加速源），源可在设置里增删改、启停、排序
+- 关键词搜索，多搜索源可切换（内置 **Docker Hub 官方 / Quay.io / 1ms 加速源 / MCR**），源可在设置里增删改、启停、排序
+- 没有公开搜索接口的站点（ghcr.io、registry.k8s.io、ECR、NGC…）用「直接指定镜像」填全称；详见 [哪些源能搜索](#哪些源能搜索)
 - 结果表格带描述、Star、拉取量、更新时间、是否官方
 - 列某个仓库的全部 tag（含可用架构信息）
 - CLI 支持 `--json`，方便脚本消费
@@ -50,7 +82,7 @@ DockerPull 解决的是一个具体的痛点：**目标机器不能访问公网 
 - registry 认证：按 `WWW-Authenticate` 自动走 Bearer token 或 Basic；私有仓库用 `-u/-p`
 - 多镜像源：内置 10 个（Docker Hub 官方、1ms、南大、轩辕 ×2、DaoCloud 系列），也可自定义；`--mirror` 可按任务选源
 - 公共镜像源开箱即用：`ghcr.io` / `quay.io` / `registry.k8s.io` / `mcr.microsoft.com` / `public.ecr.aws` / `nvcr.io` /
-  `registry.gitlab.com` / `cgr.dev` / `gcr.io`（直接写 `主机/命名空间/仓库` 即可拉取；其中 quay.io 支持关键词搜索）
+  `registry.gitlab.com` / `cgr.dev` / `gcr.io`（直接写 `主机/命名空间/仓库` 即可拉取；其中 quay.io 与 mcr.microsoft.com 支持关键词搜索）
 - 私有仓库凭证管理：`login` / `logout` 保存登录信息（Windows 用 DPAPI 加密、密钥不落盘），之后拉私有镜像免带 `-u/-p`
 - **TLS 证书校验默认开启**（`--no-verify-tls` 可关）；`--insecure` 表示 registry 走明文 HTTP
 - 代理三态：跟随系统 / 直连 / 自定义
@@ -75,7 +107,7 @@ DockerPull 解决的是一个具体的痛点：**目标机器不能访问公网 
 ### F5 本地镜像包管理
 
 - 列出已生成的 `.tar`（文件名、镜像、tag、架构、大小、生成时间），并与磁盘目录自动对账
-- 浏览器里直接下载 tar 到本机
+- 浏览器里直接下载 tar 到本机，或**在资源管理器中打开所在文件夹**（服务端执行，路径经与下载/删除相同的校验）
 - 删除产物按数据库记录执行并校验路径，不会再出现"传一个 `../` 就删任意文件"的问题
 - 页面上直接给出 `docker load -i <文件>` 的导入命令
 
