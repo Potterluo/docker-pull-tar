@@ -1,10 +1,10 @@
 # Release: on a v* tag, build cross-platform binaries (UI embedded) and attach
 # them to a GitHub Release.
 #
-# Two jobs, because the desktop shell cannot be built everywhere: the CLI target
-# is pure Go (CGO off) and cross-compiles from Linux, while cmd/desktop is a Wails
-# app that needs a Windows host (and the -H windowsgui linker flag, without which
-# the artifact opens a console window).
+# Build then publish, in separate jobs. Creating the release from inside the
+# build matrix meant every leg called action-gh-release, and the generated notes
+# were appended once per leg — the published body was "Full Changelog" repeated
+# five times. Artifacts are collected first and the release is created once.
 name: release
 on:
   push:
@@ -50,9 +50,9 @@ jobs:
         run: |
           set -euo pipefail
           NAME=dockerpull_${{ matrix.goos }}_${{ matrix.goarch }}
-          # The binary name is dockerpull (dockerpull.exe on Windows). The old
-          # recipe here packaged "$NAME/app$ext", a file nothing ever built, so
-          # the zip/tar step failed and NO release was produced.
+          # The binary is dockerpull (dockerpull.exe on Windows). The old recipe
+          # here packaged "$NAME/app$ext", a file nothing built, so the zip/tar
+          # step failed and produced no release at all.
           BIN=dockerpull${{ matrix.ext }}
           LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} \
             -X github.com/Potterluo/docker-pull-tar/internal/buildinfo.Version=${VERSION} \
@@ -66,14 +66,17 @@ jobs:
           else
             tar -czf "${NAME}.tar.gz" -C "${NAME}" "${BIN}"
           fi
-          ls -l
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: dockerpull_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: |
             dist/*.zip
             dist/*.tar.gz
-          generate_release_notes: true
+          if-no-files-found: error
 
+  # The desktop shell cannot be built from Linux: it is a Wails app, and it needs
+  # the -H windowsgui linker flag, without which the artifact opens a console
+  # window on every launch.
   desktop:
     runs-on: windows-latest
     steps:
@@ -106,8 +109,6 @@ jobs:
           $ld = "-s -w -X main.version=$env:VERSION -X main.commit=$env:COMMIT " +
                 "-X github.com/Potterluo/docker-pull-tar/internal/buildinfo.Version=$env:VERSION " +
                 "-X github.com/Potterluo/docker-pull-tar/internal/buildinfo.Commit=$env:COMMIT"
-          # -H windowsgui is a LINKER FLAG: a plain go build produces a console
-          # binary that opens a command-line window on every launch.
           go build -tags desktop,production -ldflags "$ld -H windowsgui" -o dockerpull-desktop.exe ./cmd/desktop
           if ($LASTEXITCODE -ne 0) { throw "desktop build failed" }
           # Assert the artifact really has no console, so a wrong build line
@@ -117,6 +118,23 @@ jobs:
           $sub = [BitConverter]::ToUInt16($b, $o + 0x5C)
           if ($sub -ne 2) { throw "desktop artifact subsystem=$sub, want 2 (WINDOWS_GUI)" }
           Compress-Archive -Path dockerpull-desktop.exe -DestinationPath dockerpull_windows_amd64_desktop.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dockerpull_windows_amd64_desktop
+          path: dockerpull_windows_amd64_desktop.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [cli, desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Check what will be attached
+        run: ls -lR assets
       - uses: softprops/action-gh-release@v2
         with:
-          files: dockerpull_windows_amd64_desktop.zip
+          files: assets/*
+          generate_release_notes: true

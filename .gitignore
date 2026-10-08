@@ -1,6 +1,12 @@
 # Build artifacts
 bin/
-dist/
+# Only the ROOT dist/. A bare `dist/` also matches internal/server/dist, which
+# excluded the directory itself — and an excluded directory cannot be
+# re-included, so `internal/server/dist/.gitkeep` could never be committed. A
+# fresh clone then had NO dist directory at all and `go:embed all:dist` failed
+# with "pattern all:dist: no matching files found" (the release job got away
+# with it only because it builds the frontend into that directory first).
+/dist/
 web/out/
 web/.next/
 internal/server/dist/*
